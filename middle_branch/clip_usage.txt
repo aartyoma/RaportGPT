@@ -1,0 +1,10 @@
+CLIP backbone used in this project: openai/clip-vit-large-patch14.
+
+Import and loading follow the Hugging Face Transformers interface:
+from transformers import CLIPModel, CLIPProcessor
+
+The model is loaded as:
+model_clip = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+process_clip = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14", use_fast=False)
+
+In this pipeline, CLIP is used as a frozen visual feature extractor. Input video frames are converted into pixel values with CLIPProcessor, passed through model_clip.vision_model(...), and the pooled visual embeddings (pooler_output) are saved as frame-level features x:[T,D] for downstream temporal modeling.

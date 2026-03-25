@@ -1,0 +1,12 @@
+ASFormer is used in this project as the temporal sequence model for frame-wise accident prediction.
+
+The original ASFormer repository is cloned and imported as:
+git clone https://github.com/ChinaYi/ASFormer.git
+import model
+
+The model is instantiated through:
+model.MyTransformer(...)
+
+In this pipeline, ASFormer takes CLIP feature sequences x:[B,D,T] together with temporal masks and predicts frame-wise logits for accident / non-accident classes over time. A pretrained checkpoint is loaded from a .pt file and then further fine-tuned in the second training stage on prepared CLIP features and binary labels y:[T].
+
+To use the fine-tuned model, first define the ASFormer architecture, then load the `ASFormer(fine-tuned).pt` checkpoint via `torch.load(...)`, and finally restore the weights with `model.load_state_dict(...)`.
