@@ -63,4 +63,5 @@ The pipeline consists of three branches:
 - **Middle branch** - uses CLIP + ASFormer to predict accident / non-accident over time
 - **Lower branch** - uses LLM-based modules to generate, refine, and format the final accident report
 
+[Architecture scheme](https://miro.com/app/board/uXjVGs7818s=/)
 
