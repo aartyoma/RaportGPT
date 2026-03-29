@@ -1,0 +1,12 @@
+## Middle branch (CLIP + ASFormer)
+
+The middle branch uses frozen CLIP embeddings as input and trains ASFormer for frame-wise accident detection.
+
+**Frozen**
+- CLIP  
+
+**Training**
+- ASFormer  
+
+**Purpose**  
+Detect accident-related temporal segments in the video.
