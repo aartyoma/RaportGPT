@@ -1,0 +1,14 @@
+## Dataset usage
+
+**Middle branch (temporal detection)**
+- DoTA  
+- CVPR:ACCIDENT @ CVPR (Kaggle)  
+
+Used for frame-wise accident detection and temporal localization.
+
+**Lower branch (report generation)**
+- MM-AU  
+- VRU-Accident  
+- BDD-X  
+
+Used for draft accident report generation, accident description, cause-related information, and driving-related explanations.
