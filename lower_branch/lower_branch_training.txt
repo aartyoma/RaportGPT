@@ -1,0 +1,67 @@
+## Lower branch 
+
+**Modules**
+- Frozen CLIP embeddings
+- Linear layer (4 concat -> 1024)
+- Temporal Transformer
+- Linear to Q-Former (1024 -> q_hidden)
+- Q-Former
+- Projection layer / MLP (q_hidden -> llm_dim)
+- Qwen2.5-7B-Instruct
+- LoRA adapters
+
+**Stage 0**
+**Frozen**
+- CLIP
+
+**Training**
+- none
+
+**Purpose**
+Extract and save CLIP embeddings for all videos.
+
+**Stage 1**
+**Frozen**
+- CLIP
+- Q-Former
+- Projection layer / MLP
+- Qwen
+
+**Training**
+- Linear layer (4 concat -> 1024)
+- Temporal Transformer
+- Linear to Q-Former (1024 -> q_hidden)
+
+**Purpose**
+Learn temporal video features and prepare compact tokens for Q-Former.
+
+**Stage 2**
+**Frozen**
+- CLIP
+- Qwen
+
+**Training**
+- Linear layer (4 concat -> 1024)
+- Temporal Transformer
+- Linear to Q-Former (1024 -> q_hidden)
+- Q-Former
+- Projection layer / MLP
+
+**Purpose**
+Align temporal video tokens with language space and make them readable for Qwen.
+
+**Stage 3**
+**Frozen**
+- CLIP
+- Linear layer (4 concat -> 1024)
+- Temporal Transformer
+- Linear to Q-Former (1024 -> q_hidden)
+- Q-Former
+- Projection layer / MLP
+- Qwen base weights
+
+**Training**
+- LoRA adapters
+
+**Purpose**
+Adapt Qwen to accident report generation on target data.
