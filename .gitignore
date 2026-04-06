@@ -17,3 +17,7 @@ data/
 datasets/
 logs/
 tmp/
+!*.png
+!*.jpg
+!*.jpeg
+!*.gif
