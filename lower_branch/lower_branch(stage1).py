@@ -39,7 +39,7 @@ qwen.config.use_cache = False
 llm_dim = qwen.config.hidden_size
 
 BASE = Path("/workspace/final5k")
-ANNO = BASE / "annotations"
+ANNO = BASE / "annotations_final.jsonl"
 FEAT = BASE / "features"
 
 
@@ -56,26 +56,17 @@ LOG_EVERY = 20
 
 
 TRAIN_PROMPT = """
-Analyze the traffic video and write a factual draft of the observed road incident.
+Write a short factual draft of the observed traffic incident in plain English.
 
-Output only these fields in this exact order:
-
-EVENT:
-ROAD SCENE:
-PARTICIPANTS:
-ACTIONS BEFORE THE INCIDENT:
-MOMENT OF COLLISION OR NEAR-COLLISION:
-ACTIONS AFTER THE INCIDENT:
-TIME MARKERS:
-RISK INDICATORS:
-UNCERTAINTIES:
-
-Rules:
-- Describe only what is visually observable in the video.
-- Do not invent speed, identity, injuries, license plates, intent, fault, or hidden causes.
-- If some detail is not visible, write: not visible.
-- Write briefly, clearly, and chronologically.
-- Do not write legal conclusions.
+Requirements:
+- Write one short paragraph of 3 to 6 sentences.
+- Describe only what is clearly visible in the video.
+- Mention the road scene only if it is visually evident.
+- Describe the road users and their actions in chronological order.
+- Describe the critical moment and the immediate aftermath.
+- Do not invent hidden causes, intent, fault, exact speed, injuries, license plates, or legal conclusions.
+- Keep the wording neutral, concrete, and report-oriented.
+- Output only the paragraph.
 """.strip()
 
 PROMPT_TOK = tokenizer(TRAIN_PROMPT, return_tensors="pt", truncation=True)
@@ -89,24 +80,19 @@ random.seed(42)
 random.shuffle(names)
 
 len_names = len(names)
-train_names = names[0:int(0.7 * len_names)]
-val_names = names[int(0.7 * len_names):int(0.85 * len_names)]
-test_names = names[int(0.85 * len_names):]
+train_names = names[0:int(0.95 * len_names)]
+val_names = names[int(0.95 * len_names):]
 
 
-
-with open("train_names.json", "w", encoding="utf-8") as f:
+with open("/workspace/split/train_names.json", "w", encoding="utf-8") as f:
     json.dump(train_names, f, ensure_ascii=False, indent=4)
 
-with open("val_names.json", "w", encoding="utf-8") as f:
+with open("/workspace/split/val_names.json", "w", encoding="utf-8") as f:
     json.dump(val_names, f, ensure_ascii=False, indent=4)
 
-with open("test_names.json", "w", encoding="utf-8") as f:
-    json.dump(test_names, f, ensure_ascii=False, indent=4)
 
 train_loader = DataLoader(train_names, batch_size=6, shuffle=True, num_workers=4, pin_memory=True, collate_fn=lambda x: x)
 val_loader = DataLoader(val_names, batch_size=6, shuffle=False, num_workers=4, pin_memory=True, collate_fn=lambda x: x)
-test_loader = DataLoader(test_names, batch_size=6, shuffle=False, num_workers=4, pin_memory=True, collate_fn=lambda x: x)
 
 
 class RaportGPT(nn.Module):
@@ -121,7 +107,7 @@ class RaportGPT(nn.Module):
                 dropout=0.1,
                 batch_first=True
             ),
-            num_layers=2
+            num_layers=3
         )
         self.toqformer_proj = nn.Linear(d, qformer_encoder_dim)
         self.qformer = blip_model.qformer
@@ -180,7 +166,7 @@ def train_step(model, x_batch, ys, time_mask, optimizer):
     model.train()
     model.qformer.eval()
     model.qwen.eval()
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
 
     B = len(ys)
 
@@ -222,14 +208,20 @@ def append_jsonl(path, row):
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
+def read_jsonl(path):
+    by_id = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            row = json.loads(line)
+            by_id[row["id"]] = row["target"]
+
+    return by_id
+
 if __name__ == "__main__":
     model = RaportGPT(d=1024, hidden_dim=4096, llm_dim=llm_dim).to(device)
     for p in model.qformer.parameters():
         p.requires_grad = False
     model.query_tokens.requires_grad = False
-
-    for p in model.tollm_proj.parameters():
-        p.requires_grad = False
 
     for p in model.qwen.parameters():
         p.requires_grad = False
@@ -237,6 +229,9 @@ if __name__ == "__main__":
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
     epoches = 5
     global_step = 0
+
+    anno_by_id = read_jsonl(ANNO)
+
 
     best_val = float("inf")
     for epoch in range(epoches):
@@ -246,11 +241,9 @@ if __name__ == "__main__":
             xs = []
             ys = []
             for name in batch:
+                stem = Path(name).stem
                 x = torch.load(FEAT / name, map_location="cpu", weights_only=True).half()
-
-                with open(ANNO / f"{Path(name).stem}.json", "r", encoding="utf-8") as f:
-                    y = json.load(f)["text"]
-
+                y = anno_by_id[stem]
                 xs.append(x)
                 ys.append(y)
 
@@ -288,11 +281,9 @@ if __name__ == "__main__":
             xs = []
             ys = []
             for name in batch:
+                stem = Path(name).stem
                 x = torch.load(FEAT / name, map_location="cpu", weights_only=True).half()
-
-                with open(ANNO / f"{Path(name).stem}.json", "r", encoding="utf-8") as f:
-                    y = json.load(f)["text"]
-
+                y = anno_by_id[stem]
                 xs.append(x)
                 ys.append(y)
 
@@ -323,6 +314,7 @@ if __name__ == "__main__":
                 "fc": model.fc.state_dict(),
                 "transformer": model.transformer.state_dict(),
                 "toqformer_proj": model.toqformer_proj.state_dict(),
+                "tollm_proj": model.tollm_proj.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "best_val_loss": best_val
             }, LOG_DIR / "best_stage1.pt")
@@ -341,50 +333,11 @@ if __name__ == "__main__":
             "fc": model.fc.state_dict(),
             "transformer": model.transformer.state_dict(),
             "toqformer_proj": model.toqformer_proj.state_dict(),
+            "tollm_proj": model.tollm_proj.state_dict(),
             "optimizer": optimizer.state_dict()
         }, CKPT_DIR / f"stage1_epoch_{epoch + 1}.pt")
 
-    test_losses = []
-    # test
-    for batch in test_loader:
-        xs = []
-        ys = []
-        for name in batch:
-            x = torch.load(FEAT / name, map_location="cpu", weights_only=True).half()
 
-            with open(ANNO / f"{Path(name).stem}.json", "r", encoding="utf-8") as f:
-                y = json.load(f)["text"]
-
-            xs.append(x)
-            ys.append(y)
-
-        max_T = max(x.shape[0] for x in xs)
-        N = xs[0].shape[1]
-        D = xs[0].shape[2]
-        B = len(xs)
-
-        x_batch = torch.zeros(B, max_T, N, D, dtype=torch.float32)
-        time_mask = torch.zeros(B, max_T, dtype=torch.long)
-
-        for i, x in enumerate(xs):
-            t = x.shape[0]
-            x_batch[i, :t] = x
-            time_mask[i, :t] = 1
-
-        x_batch = x_batch.to(device, non_blocking=True)
-        time_mask = time_mask.to(device, non_blocking=True)
-
-        loss = val_step(model, x_batch, ys, time_mask)
-        test_losses.append(loss)
-    test_loss = sum(test_losses) / len(test_losses)
-    print(f"test_loss={test_loss:.4f}")
-    append_jsonl(EPOCH_LOG, {
-        "final_test_loss": float(test_loss)
-    })
-    with open(LOG_DIR / "test_result.json", "w", encoding="utf-8") as f:
-        json.dump({
-            "test_loss": float(test_loss)
-        }, f, ensure_ascii=False, indent=2)
 
 
 

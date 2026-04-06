@@ -24,13 +24,13 @@ Extract and save CLIP embeddings for all videos.
 **Frozen**
 - CLIP
 - Q-Former
-- Projection layer / MLP
 - Qwen
 
 **Training**
 - Linear layer (4 concat -> 1024)
 - Temporal Transformer
 - Linear to Q-Former (1024 -> q_hidden)
+- Projection layer / MLP
 
 **Purpose**
 Learn temporal video features and prepare compact tokens for Q-Former.
