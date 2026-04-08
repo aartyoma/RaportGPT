@@ -1,4 +1,9 @@
+
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
+
+
 import random
 import json
 from pathlib import Path
@@ -35,12 +40,15 @@ qwen = AutoModelForCausalLM.from_pretrained(
 ).to(device)
 
 qwen.config.use_cache = False
+qwen.gradient_checkpointing_enable()
 
 llm_dim = qwen.config.hidden_size
 
 BASE = Path("/workspace/final5k")
-ANNO = BASE / "annotations_final.jsonl"
+ANNO = BASE / "annotations.jsonl"
 FEAT = BASE / "features"
+
+Path("/workspace/split").mkdir(parents=True, exist_ok=True)
 
 
 LOG_DIR = Path("logs")
@@ -162,27 +170,48 @@ class RaportGPT(nn.Module):
         return out
 
 
-def train_step(model, x_batch, ys, time_mask, optimizer):
+def train_step(model, x_batch, ys, time_mask, optimizer, scaler):
     model.train()
     model.qformer.eval()
     model.qwen.eval()
     optimizer.zero_grad(set_to_none=True)
 
     B = len(ys)
+    lmb= 0.5
+    margin= 0.3
+    x_wrong = torch.cat([x_batch[1:], x_batch[:1]], dim=0)
+    time_mask_wrong = torch.cat([time_mask[1:], time_mask[:1]], dim=0)
 
     prompt_ids = PROMPT_IDS.expand(B, -1).to(device, non_blocking=True)
     prompt_mask = PROMPT_MASK.expand(B, -1).to(device, non_blocking=True)
+
+    ys = [y.strip() + tokenizer.eos_token for y in ys]
 
     target_tok = tokenizer(ys, return_tensors="pt", padding=True, truncation=True)
     target_ids = target_tok["input_ids"].to(device, non_blocking=True)
     target_mask = target_tok["attention_mask"].to(device, non_blocking=True)
 
-    out = model(x_batch, prompt_ids, prompt_mask, target_ids, target_mask, time_mask)
-    loss = out.loss
+    with torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device == "cuda")):
+        out_real = model(x_batch, prompt_ids, prompt_mask, target_ids, target_mask, time_mask)
+        loss_real = out_real.loss
 
-    loss.backward()
+
+    if B > 1:
+        with torch.no_grad():
+            with torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device == "cuda")):
+                out_wrong = model(x_wrong, prompt_ids, prompt_mask, target_ids, target_mask, time_mask_wrong)
+                loss_wrong = out_wrong.loss.detach()
+
+        contrast_loss = torch.relu(margin - (loss_wrong - loss_real))
+        loss = loss_real + lmb * contrast_loss
+    else:
+        loss = loss_real
+
+    scaler.scale(loss).backward()
+    scaler.unscale_(optimizer)
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
-    optimizer.step()
+    scaler.step(optimizer)
+    scaler.update()
 
     return loss.item(), grad_norm
 
@@ -197,11 +226,14 @@ def val_step(model, x_batch, ys, time_mask):
     prompt_ids = PROMPT_IDS.expand(B, -1).to(device, non_blocking=True)
     prompt_mask = PROMPT_MASK.expand(B, -1).to(device, non_blocking=True)
 
+    ys = [y.strip() + tokenizer.eos_token for y in ys]
+
     target_tok = tokenizer(ys, return_tensors="pt", padding=True, truncation=True)
     target_ids = target_tok["input_ids"].to(device, non_blocking=True)
     target_mask = target_tok["attention_mask"].to(device, non_blocking=True)
 
-    out = model(x_batch, prompt_ids, prompt_mask, target_ids, target_mask, time_mask)
+    with torch.amp.autocast("cuda", dtype=torch.float16, enabled=(device == "cuda")):
+        out = model(x_batch, prompt_ids, prompt_mask, target_ids, target_mask, time_mask)
     return out.loss.item()
 
 def append_jsonl(path, row):
@@ -227,6 +259,7 @@ if __name__ == "__main__":
         p.requires_grad = False
 
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
+    scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda"))
     epoches = 5
     global_step = 0
 
@@ -263,7 +296,16 @@ if __name__ == "__main__":
             x_batch = x_batch.to(device, non_blocking=True)
             time_mask = time_mask.to(device, non_blocking=True)
 
-            loss, grad_norm = train_step(model, x_batch, ys, time_mask, optimizer)
+            try:
+                loss, grad_norm = train_step(model, x_batch, ys, time_mask, optimizer, scaler)
+            except torch.OutOfMemoryError:
+                print("OOM on batch, skipping")
+                optimizer.zero_grad(set_to_none=True)
+                del xs, ys, x_batch, time_mask
+                torch.cuda.empty_cache()
+                continue
+            del xs, ys, x_batch, time_mask
+            torch.cuda.empty_cache()
             global_step += 1
             train_losses.append(loss)
             if global_step % LOG_EVERY == 0:
@@ -303,10 +345,21 @@ if __name__ == "__main__":
             x_batch = x_batch.to(device, non_blocking=True)
             time_mask = time_mask.to(device, non_blocking=True)
 
-            loss = val_step(model, x_batch, ys, time_mask)
+            try:
+                loss = val_step(model, x_batch, ys, time_mask)
+
+            except torch.OutOfMemoryError:
+                print("OOM on batch, skipping")
+                del xs, ys, x_batch, time_mask
+                torch.cuda.empty_cache()
+                continue
+
+            del xs, ys, x_batch, time_mask
+            torch.cuda.empty_cache()
             val_losses.append(loss)
-        train_loss = sum(train_losses) / len(train_losses)
-        val_loss = sum(val_losses) / len(val_losses)
+
+        train_loss = sum(train_losses) / max(1,len(train_losses))
+        val_loss = sum(val_losses) / max(1,len(val_losses))
         if val_loss < best_val:
             best_val = val_loss
             torch.save({
