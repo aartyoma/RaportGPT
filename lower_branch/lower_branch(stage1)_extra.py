@@ -40,7 +40,6 @@ qwen = AutoModelForCausalLM.from_pretrained(
 ).to(device)
 
 qwen.config.use_cache = False
-qwen.gradient_checkpointing_enable()
 
 llm_dim = qwen.config.hidden_size
 
@@ -54,9 +53,9 @@ Path("/workspace/split").mkdir(parents=True, exist_ok=True)
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
-STEP_LOG = LOG_DIR / "train_steps.jsonl"
-EPOCH_LOG = LOG_DIR / "train_epochs.jsonl"
-CKPT_DIR = LOG_DIR / "stage1_ckpts"
+STEP_LOG = LOG_DIR / "train_steps(stage1)_extra.jsonl"
+EPOCH_LOG = LOG_DIR / "train_epochs(stage1)_extra.jsonl"
+CKPT_DIR = LOG_DIR / "stage1_ckpts_extra"
 CKPT_DIR.mkdir(exist_ok=True)
 
 
@@ -82,21 +81,10 @@ PROMPT_IDS = PROMPT_TOK["input_ids"]
 PROMPT_MASK = PROMPT_TOK["attention_mask"]
 
 
-names = sorted([p.name for p in FEAT.glob("*.pt")])
-
-random.seed(42)
-random.shuffle(names)
-
-len_names = len(names)
-train_names = names[0:int(0.95 * len_names)]
-val_names = names[int(0.95 * len_names):]
-
-
-with open("/workspace/split/train_names.json", "w", encoding="utf-8") as f:
-    json.dump(train_names, f, ensure_ascii=False, indent=4)
-
-with open("/workspace/split/val_names.json", "w", encoding="utf-8") as f:
-    json.dump(val_names, f, ensure_ascii=False, indent=4)
+with open("/workspace/split/train_names.json", "r", encoding="utf-8") as f:
+    train_names = json.load(f)
+with open("/workspace/split/val_names.json", "r", encoding="utf-8") as f:
+    val_names = json.load(f)
 
 
 train_loader = DataLoader(train_names, batch_size=6, shuffle=True, num_workers=4, pin_memory=True, collate_fn=lambda x: x)
@@ -251,6 +239,12 @@ def read_jsonl(path):
 
 if __name__ == "__main__":
     model = RaportGPT(d=1024, hidden_dim=4096, llm_dim=llm_dim).to(device)
+    ckpt = torch.load(LOG_DIR / "best_stage1.pt", map_location="cpu")
+    model.fc.load_state_dict(ckpt["fc"])
+    model.transformer.load_state_dict(ckpt["transformer"])
+    model.toqformer_proj.load_state_dict(ckpt["toqformer_proj"])
+    model.tollm_proj.load_state_dict(ckpt["tollm_proj"])
+
     for p in model.qformer.parameters():
         p.requires_grad = False
     model.query_tokens.requires_grad = False
@@ -258,9 +252,14 @@ if __name__ == "__main__":
     for p in model.qwen.parameters():
         p.requires_grad = False
 
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-4)
+    optimizer = torch.optim.AdamW([
+        {"params": model.fc.parameters(), "lr": 5e-5},
+        {"params": model.transformer.parameters(), "lr": 5e-5},
+        {"params": model.toqformer_proj.parameters(), "lr": 5e-5},
+        {"params": model.tollm_proj.parameters(), "lr": 5e-5},
+    ], weight_decay=0.01)
     scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda"))
-    epoches = 5
+    epoches = 3
     global_step = 0
 
     anno_by_id = read_jsonl(ANNO)
@@ -305,7 +304,6 @@ if __name__ == "__main__":
                 torch.cuda.empty_cache()
                 continue
             del xs, ys, x_batch, time_mask
-            torch.cuda.empty_cache()
             global_step += 1
             train_losses.append(loss)
             if global_step % LOG_EVERY == 0:
@@ -355,7 +353,6 @@ if __name__ == "__main__":
                 continue
 
             del xs, ys, x_batch, time_mask
-            torch.cuda.empty_cache()
             val_losses.append(loss)
 
         train_loss = sum(train_losses) / max(1,len(train_losses))
@@ -370,7 +367,7 @@ if __name__ == "__main__":
                 "tollm_proj": model.tollm_proj.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "best_val_loss": best_val
-            }, LOG_DIR / "best_stage1.pt")
+            }, LOG_DIR / "best_stage1_extra.pt")
 
 
         append_jsonl(EPOCH_LOG, {
@@ -388,7 +385,7 @@ if __name__ == "__main__":
             "toqformer_proj": model.toqformer_proj.state_dict(),
             "tollm_proj": model.tollm_proj.state_dict(),
             "optimizer": optimizer.state_dict()
-        }, CKPT_DIR / f"stage1_epoch_{epoch + 1}.pt")
+        }, CKPT_DIR / f"stage1_extra_epoch_{epoch + 1}.pt")
 
 
 
